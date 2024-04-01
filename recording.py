@@ -25,12 +25,14 @@ from firebase_admin import credentials, storage, firestore
 import cv2
 from skimage.metrics import mean_squared_error as ssim
 
-
+# Initialise Firebase
 cred = credentials.Certificate("key.json")
 firebase_app = firebase_admin.initialize_app(
     cred, {"storageBucket": "motion-detection-fyp.appspot.com"}
 )
 db = firestore.client()
+
+# Set initial values locally and in database
 recording = False
 motion = False
 loop = True
@@ -50,9 +52,11 @@ db.collection("settings").document("pi_settings").set(
 db.collection("settings").document("record_video").set({"capture_video": False})
 db.collection("settings").document("record").set({"capture_photo": False})
 
+# Initialise queue for processing frames
 q = queue.Queue()
 
 
+# Class to store config info
 class PiSettings:
     def __init__(self):
         self.video_resolution = []
@@ -63,6 +67,7 @@ class PiSettings:
 piSettings = PiSettings()
 
 
+# Detect changes in firebase
 def on_snapshot(doc_snapshot, changes, real_time):
     global motion
 
@@ -77,13 +82,14 @@ def on_snapshot(doc_snapshot, changes, real_time):
 
     for change in changes:
 
+        # Enable/Disabel Motion
         if (
             change.type.name == "MODIFIED"
             and "motion_detection" in change.document.to_dict()
         ):
-            
-                on_motion_button_clicked()
 
+            on_motion_button_clicked()
+        # Take photo
         if (
             change.type.name == "MODIFIED"
             and "capture_photo" in change.document.to_dict()
@@ -95,7 +101,7 @@ def on_snapshot(doc_snapshot, changes, real_time):
                 db.collection("settings").document("record").set(
                     {"capture_photo": False}
                 )
-
+        # Take Video
         if (
             change.type.name == "MODIFIED"
             and "capture_video" in change.document.to_dict()
@@ -107,6 +113,7 @@ def on_snapshot(doc_snapshot, changes, real_time):
                 db.collection("settings").document("record_video").set(
                     {"capture_video": False}
                 )
+        # Change rfesolution
         if change.type.name == "MODIFIED" and "resolution" in change.document.to_dict():
 
             print("Rebooting")
@@ -116,6 +123,7 @@ def on_snapshot(doc_snapshot, changes, real_time):
     callback_done.set()
 
 
+# Update Status of Pi
 def update_pi_status():
     cpu = CPUTemperature()
     while True:
@@ -131,15 +139,18 @@ def update_pi_status():
         update_status_label(cpu.temperature, recording)
 
 
+# Initialise GUI and components
 app = QApplication([])
 settings_label = QLabel()
 status_label = QLabel()
 
 
+# Update Pi Status
 def update_status_label(cpu, recording):
     status_label.setText("CPU Temperature: {}C\nRecording: {}".format(cpu, recording))
 
 
+# Update GUI labels
 def update_gui(pi_settings):
 
     settings_label.setText(
@@ -152,17 +163,19 @@ def update_gui(pi_settings):
     )
 
 
+# start status thread
 status_thread = threading.Thread(target=update_pi_status)
 status_thread.start()
 
 
 callback_done = threading.Event()
+
+# Set up watcher for settings document
 doc_ref = db.collection("settings")
-
-
 doc_watch = doc_ref.on_snapshot(on_snapshot)
 
 
+# Receive frames for motion detection
 def receive_frames():
     while loop:
         if motion == True:
@@ -172,7 +185,9 @@ def receive_frames():
 
 receive_thread = threading.Thread(target=receive_frames)
 receive_thread.start()
+# Initialise Pi cam
 picam2 = Picamera2()
+# Ensure everything is running before starting camera configuration
 time.sleep(5)
 picam2.configure(
     picam2.create_video_configuration(
@@ -182,6 +197,7 @@ picam2.configure(
 )
 
 
+# Motion Detection loop
 def motion_detection():
     while loop:
         global old_frame
@@ -189,7 +205,7 @@ def motion_detection():
         global recording
         global activity_count
         if motion == True:
-
+            # Check if frames available
             if q.empty() != True:
                 frame = q.get()
                 # cv2.imshow("Initial Frame", frame)
@@ -221,7 +237,7 @@ def motion_detection():
                     if ssim_val > piSettings.movementThreshold:
                         activity_count += 1
                         if activity_count >= 10:
-
+                            # Initiate recording if 10 frames are sufficiently different
                             picam2.stop()
                             picam2.start()
                             video_button.setEnabled(False)
@@ -243,7 +259,9 @@ def motion_detection():
                 # recording if it exceeds th einactive value
                 else:
                     recorded_frames += 1
-                    if (time.time() - start_time) > piSettings.recording_length:
+                    if (
+                        time.time() - start_time
+                    ) > piSettings.recording_length:  # Check if video lenght exceeded
                         picam2.stop_encoder()
                         print("Recording Stopped")
 
@@ -296,6 +314,7 @@ motion_thread = threading.Thread(target=motion_detection)
 motion_thread.start()
 
 
+# Video button function for recording
 def record_video():
     global recording
     global file_output
@@ -310,12 +329,12 @@ def record_video():
         input_file = FileOutput(input + ".h264")
         picam2.start_encoder(encoder, input_file)
         recording = True
-        time.sleep(recordinglength)
+        time.sleep(recordinglength)  # Records fro specified time
         picam2.stop_encoder()
         video_button.setText("Start recording")
         recording = False
         time.sleep(2)
-        shutil.move(
+        shutil.move(  # Move file for conversion
             input + ".h264",
             os.getcwd() + "/ConversionQueue/",
             copy_function=shutil.copy2,
@@ -325,6 +344,7 @@ def record_video():
         picam2.start()
 
 
+# Enable/Disable Motion
 def on_motion_button_clicked():
     global motion
     if motion == True:
@@ -337,6 +357,7 @@ def on_motion_button_clicked():
         motion_button.setText("Disable Motion Detection")
 
 
+# Take test photo
 def on_photo_button_clicked():
     global recording
     global taking_photo
@@ -371,24 +392,25 @@ def on_photo_button_clicked():
         photo_button.setEnabled(True)
 
 
+# Code to set up preview on GUI
 # qpicamera2 = QGlPicamera2(
 #     picam2,
 #     width=piSettings.video_resolution[0],
 #     height=piSettings.video_resolution[1],
 #     keep_ar=False,
 # )
+
+# GUI creation
 video_button = QPushButton("Record Video")
 motion_button = QPushButton("Enable Motion Detection")
 photo_button = QPushButton("Click to capture JPEG")
 window = QWidget()
-
-
 photo_button.clicked.connect(on_photo_button_clicked)
 motion_button.clicked.connect(on_motion_button_clicked)
 video_button.clicked.connect(record_video)
-
 picam2.start()
 
+# Blank frame creation
 frame = np.zeros((100, 100, 3), dtype=np.uint8)
 activity_count = 0
 resized_video = (256, 144)
@@ -396,24 +418,25 @@ resized_frame = cv2.resize(frame, resized_video)
 gray_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2GRAY)
 old_frame = cv2.GaussianBlur(gray_frame, (5, 5), 0)
 blank = np.zeros((resized_video[1], resized_video[0]), np.uint8)
+
+# Setting initial values
 recording = False
 taking_photo = False
-testing = False
 auto_delete = True
+
 layout_h = QHBoxLayout()
 layout_v = QVBoxLayout()
-
 layout_v.addWidget(status_label)
 layout_v.addWidget(settings_label)
 layout_v.addWidget(video_button)
 layout_v.addWidget(photo_button)
 layout_v.addWidget(motion_button)
-
 # layout_h.addWidget(qpicamera2, 80)
 layout_h.addLayout(layout_v, 20)
 window.setWindowTitle("Qt Picamera2 App")
 window.resize(1200, 600)
 window.setLayout(layout_h)
 
+# Start app
 window.show()
 app.exec()

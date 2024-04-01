@@ -7,23 +7,23 @@ import time
 from uuid import uuid4
 import cv2
 from tflite_support.task import core, processor, vision
-import utils
-
 from firebase_admin import credentials, storage, firestore
 import firebase_admin
 from urllib3.exceptions import ProtocolError
 from google.api_core import retry
+import utils
 
-predicate = retry.if_exception_type(
-    ConnectionResetError, ProtocolError
-)
+# Fix for connection errors
+predicate = retry.if_exception_type(ConnectionResetError, ProtocolError)
 reset_retry = retry.Retry(predicate)
 
+# Constants
 ANNOTATION_PATH = os.getcwd() + "/AnnotationQueue/"
 CONVERSION_PATH = os.getcwd() + "/ConversionQueue/"
 DETECTIONS = "detections"
 RESOLUTION = "resolution"
 ANNOTATION = "annotation"
+# Intialise Firebase
 cred = credentials.Certificate("key.json")
 firebase_admin.initialize_app(
     cred, {"storageBucket": "motion-detection-fyp.appspot.com"}
@@ -34,6 +34,7 @@ converting = False
 annotating = False
 
 
+# Class to store config info
 class PiSettings:
 
     def __init__(self):
@@ -48,6 +49,7 @@ class PiSettings:
         return string
 
 
+# Detect changes in firebase
 def on_snapshot(doc_snapshot, changes, real_time):
 
     max_results = doc_snapshot[0].to_dict().get(DETECTIONS)
@@ -63,16 +65,18 @@ def on_snapshot(doc_snapshot, changes, real_time):
 
 callback_done = threading.Event()
 
+# Initialise class and setup watchers for database
 piSettings = PiSettings()
 doc_ref = db.collection("settings")
 doc_watch = doc_ref.on_snapshot(on_snapshot)
 
 
+# Upload video to firebase
 def upload(fileToUpload, detections, videoResolution):
 
     print("Uploading File: " + fileToUpload)
 
-    # try:    
+    # try:
     bucket = storage.bucket()
     if "Output" in fileToUpload:
         blob = bucket.blob(fileToUpload.split("Output")[1])
@@ -85,8 +89,11 @@ def upload(fileToUpload, detections, videoResolution):
     blob.upload_from_filename(fileToUpload)
     blob.make_public()
     gcs_storageURL = blob.public_url
+    # If video is annotated
     if ("Output") in fileToUpload:
-        timestamp = datetime.datetime.strptime(fileToUpload.split("Output")[1].split(".mp4")[0], "%Y-%m-%d-%H%M%S")
+        timestamp = datetime.datetime.strptime(
+            fileToUpload.split("Output")[1].split(".mp4")[0], "%Y-%m-%d-%H%M%S"
+        )
         firebase_storageURL = "https://firebasestorage.googleapis.com/v0/b/{}/o/{}?alt=media&token={}".format(
             "motion-detection-fyp.appspot.com",
             fileToUpload.split("Output")[1],
@@ -101,8 +108,11 @@ def upload(fileToUpload, detections, videoResolution):
                 RESOLUTION: videoResolution,
             }
         )
+    # If video is not annotated
     else:
-        timestamp = datetime.datetime.strptime("2" + fileToUpload.split("/2")[1].split(".mp4")[0], "%Y-%m-%d-%H%M%S")
+        timestamp = datetime.datetime.strptime(
+            "2" + fileToUpload.split("/2")[1].split(".mp4")[0], "%Y-%m-%d-%H%M%S"
+        )
         firebase_storageURL = "https://firebasestorage.googleapis.com/v0/b/{}/o/{}?alt=media&token={}".format(
             "motion-detection-fyp.appspot.com",
             "2" + fileToUpload.split("/2")[1],
@@ -119,21 +129,16 @@ def upload(fileToUpload, detections, videoResolution):
         )
     print("File uploaded to: " + firebase_storageURL)
     os.remove(fileToUpload)
-    # except:
-    #     cred = credentials.Certificate("key.json")
-        
-    #     db = firestore.client()
-    #     upload(fileToUpload, detections, videoResolution)
-
-    
 
 
+# COnvert h264 to mp4
 def conversionQueue():
     global annotating
     global converting
     time.sleep(5)
+    # Looks for files every 5 seconds
     while True:
-
+        # Converts files if not annotating
         if annotating == False:
             if os.listdir(CONVERSION_PATH) != []:
                 converting = True
@@ -154,10 +159,12 @@ def conversionQueue():
             time.sleep(15)
 
 
+# Conversion thread
 conversion_thread = threading.Thread(target=conversionQueue)
 conversion_thread.start()
 
 
+# Convert video using MP4Box
 def convert_video(input, output):
     try:
         print("Converting " + input + " to " + output)
@@ -168,31 +175,36 @@ def convert_video(input, output):
         print(e)
 
 
+# Annotating loop always looking for videos
 while True:
 
     time.sleep(5)
-    # print(os.listdir(os.getcwd() + "/output"))
+
     if converting == False:
         if os.listdir(ANNOTATION_PATH) != []:
             annotating = True
             input = os.listdir(ANNOTATION_PATH)[0]
 
+            # Video Capture object used to read video file, fps and resolution set
             cap = cv2.VideoCapture(ANNOTATION_PATH + input.split(".")[0] + ".mp4")
             fps = int(cap.get(cv2.CAP_PROP_FPS))
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             resolution = [width, height]
             if piSettings.annotation == True:
-
+                # TF Lite base options
                 base_option = core.BaseOptions(
                     file_name=model, use_coral=False, num_threads=piSettings.numThreads
                 )
+                # Detection Options
                 detection_options = processor.DetectionOptions(
                     max_results=piSettings.detections, score_threshold=0.5
                 )
+
                 options = vision.ObjectDetectorOptions(
                     base_options=base_option, detection_options=detection_options
                 )
+                # Video writer object used to write frames to
                 fourcc = cv2.VideoWriter_fourcc(*"avc1")
                 outputFile = ANNOTATION_PATH + "Output" + input
                 out = cv2.VideoWriter(
@@ -202,8 +214,10 @@ while True:
                     (resolution[0], resolution[1]),
                 )
                 detector = vision.ObjectDetector.create_from_options(options)
+                # Used to hold objects detected
                 detection_set = set(())
 
+                # FPS counter
                 pos = (20, 60)
                 height = 1.5
                 weight = 2
@@ -213,6 +227,7 @@ while True:
                 print("Annotating File: " + input)
                 while cap.isOpened():
                     ret, frame = cap.read()
+                    # End of video
                     if not ret:
                         print("Can't receive frame (stream end?). Exiting...")
                         break
@@ -226,9 +241,9 @@ while True:
 
                         category_name = item.categories[0].category_name
                         detection_set.add(category_name)
-
+                    # utils.py used to create bounding box
                     image = utils.visualize(frame, detections)
-
+                    # write annotated frame to video writer object
                     out.write(frame)
                     cv2.putText(
                         frame,
@@ -257,7 +272,6 @@ while True:
                 annotating = False
                 time.sleep(5)
             else:
-
                 print("Annotating off")
                 upload(ANNOTATION_PATH + input, None, resolution)
                 annotating = False
