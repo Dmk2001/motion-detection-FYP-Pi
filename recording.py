@@ -4,7 +4,6 @@ import shutil
 import threading
 import time
 from uuid import uuid4
-from PyQt5 import QtCore
 from PyQt5.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -35,7 +34,21 @@ db = firestore.client()
 recording = False
 motion = False
 loop = True
-
+settings_init = db.collection("settings").document("pi_settings").get().to_dict()
+db.collection("settings").document("pi_settings").get().to_dict()
+print(settings_init)
+print(settings_init["annotation"])
+db.collection("settings").document("pi_settings").set(
+    {
+        "annotation": settings_init["annotation"],
+        "detections": settings_init["detections"],
+        "motion_detection": motion,
+        "movement_threshold": settings_init["movement_threshold"],
+        "recording_length": settings_init["recording_length"],
+    }
+)
+db.collection("settings").document("record_video").set({"capture_video": False})
+db.collection("settings").document("record").set({"capture_photo": False})
 
 q = queue.Queue()
 
@@ -45,15 +58,15 @@ class PiSettings:
         self.video_resolution = []
         self.recording_length = 0
         self.movementThreshold = 0
+
+
 piSettings = PiSettings()
 
+
 def on_snapshot(doc_snapshot, changes, real_time):
-    global old_resolution
-    print(doc_snapshot)
+    global motion
 
     resolution = doc_snapshot[3].to_dict().get("resolution")
-
-    print(resolution)
 
     if resolution == 480:
         piSettings.video_resolution = [640, 480]
@@ -63,7 +76,14 @@ def on_snapshot(doc_snapshot, changes, real_time):
     piSettings.movementThreshold = doc_snapshot[0].to_dict().get("movement_threshold")
 
     for change in changes:
-        
+
+        if (
+            change.type.name == "MODIFIED"
+            and "motion_detection" in change.document.to_dict()
+        ):
+            
+                on_motion_button_clicked()
+
         if (
             change.type.name == "MODIFIED"
             and "capture_photo" in change.document.to_dict()
@@ -87,28 +107,17 @@ def on_snapshot(doc_snapshot, changes, real_time):
                 db.collection("settings").document("record_video").set(
                     {"capture_video": False}
                 )
-        if (
-            change.type.name == "MODIFIED"
-            and "resolution" in change.document.to_dict()
-        ):
-            
+        if change.type.name == "MODIFIED" and "resolution" in change.document.to_dict():
+
             print("Rebooting")
             os.system("sudo reboot")
-            
+        update_gui(piSettings)
 
     callback_done.set()
 
 
-
-callback_done = threading.Event()
-doc_ref = db.collection("settings")
-
-
-doc_watch = doc_ref.on_snapshot(on_snapshot)
-
-
 def update_pi_status():
-    cpu = CPUTemperature() 
+    cpu = CPUTemperature()
     while True:
 
         db.collection("status").document("pi_status").set(
@@ -119,22 +128,39 @@ def update_pi_status():
             }
         )
         time.sleep(5)
+        update_status_label(cpu.temperature, recording)
+
+
+app = QApplication([])
+settings_label = QLabel()
+status_label = QLabel()
+
+
+def update_status_label(cpu, recording):
+    status_label.setText("CPU Temperature: {}C\nRecording: {}".format(cpu, recording))
+
+
+def update_gui(pi_settings):
+
+    settings_label.setText(
+        "Video Resolution: {}X{}\nRecording Length: {}s\nMovement Threshold: {}".format(
+            pi_settings.video_resolution[0],
+            pi_settings.video_resolution[1],
+            pi_settings.recording_length,
+            pi_settings.movementThreshold,
+        )
+    )
 
 
 status_thread = threading.Thread(target=update_pi_status)
 status_thread.start()
 
 
-picam2 = Picamera2()
-time.sleep(5)
+callback_done = threading.Event()
+doc_ref = db.collection("settings")
 
-picam2.configure(
-    picam2.create_video_configuration(
-        main={"size": (piSettings.video_resolution[0], piSettings.video_resolution[1])},
-        controls={"FrameRate": 30},
-    )
-)
-app = QApplication([])
+
+doc_watch = doc_ref.on_snapshot(on_snapshot)
 
 
 def receive_frames():
@@ -146,6 +172,14 @@ def receive_frames():
 
 receive_thread = threading.Thread(target=receive_frames)
 receive_thread.start()
+picam2 = Picamera2()
+time.sleep(5)
+picam2.configure(
+    picam2.create_video_configuration(
+        main={"size": (piSettings.video_resolution[0], piSettings.video_resolution[1])},
+        controls={"FrameRate": 30},
+    )
+)
 
 
 def motion_detection():
@@ -158,14 +192,27 @@ def motion_detection():
 
             if q.empty() != True:
                 frame = q.get()
+                # cv2.imshow("Initial Frame", frame)
                 resized_frame = cv2.resize(frame, resized_video)
+                # cv2.imshow("Resized Frame", resized_frame)
                 gray_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2GRAY)
+                # cv2.imshow("Greyscale Frame", gray_frame)
                 final_frame = cv2.GaussianBlur(gray_frame, (5, 5), 0)
+                # cv2.imshow("Gaussian Blur", final_frame)
 
                 diff = cv2.absdiff(final_frame, old_frame)
+                # cv2.imshow("Difference", diff)
                 result = cv2.threshold(diff, 5, 255, cv2.THRESH_BINARY)[1]
+                # cv2.imshow("Thresholded Image", result)
                 ssim_val = int(ssim(result, blank))
                 old_frame = final_frame
+                # if(ssim_val > piSettings.movementThreshold):
+                #     cv2.imshow("Difference", diff)
+                #     cv2.imshow("Gaussian Blur", final_frame)
+                #     cv2.imshow("Greyscale Frame", gray_frame)
+                #     cv2.imshow("Resized Frame", resized_frame)
+                #     cv2.imshow("Initial Frame", frame)
+                #     cv2.imshow("Thresholded Image", result)
                 print("Motion: " + str(ssim_val))
 
                 # count the number of frames where the ssim value exceeds the threshold value, and begin
@@ -174,34 +221,32 @@ def motion_detection():
                     if ssim_val > piSettings.movementThreshold:
                         activity_count += 1
                         if activity_count >= 10:
-                            if not testing:
-                                folderdate = datetime.datetime.now().strftime(
-                                    "%Y-%m-%d"
-                                )
-                                picam2.stop()
-                                picam2.start()
-                                video_button.setEnabled(False)
-                                encoder = H264Encoder(bitrate=10000000)
-                                input = time.strftime("%Y-%m-%d-%H%M%S")
-                                input_file = FileOutput(input + ".h264")
-                                picam2.start_encoder(encoder, input_file)
-                                print("Started Recording")
 
-                                start_time = time.time()
-                            else:
-                                print(0)
-                                # print(filedate + " recording started - Testing mode")
+                            picam2.stop()
+                            picam2.start()
+                            video_button.setEnabled(False)
+                            encoder = H264Encoder(bitrate=10000000)
+                            input = time.strftime("%Y-%m-%d-%H%M%S")
+                            input_file = FileOutput(input + ".h264")
+                            picam2.start_encoder(encoder, input_file)
+                            print("Started Recording")
+
+                            start_time = time.time()
+
                             recording = True
+                            recorded_frames = 0
                             activity_count = 0
                     else:
                         activity_count = 0
 
                 # if already recording, count the number of frames where there's no motion activity and stop
-                # recording if it exceeds the tail_length value
+                # recording if it exceeds th einactive value
                 else:
+                    recorded_frames += 1
                     if (time.time() - start_time) > piSettings.recording_length:
                         picam2.stop_encoder()
                         print("Recording Stopped")
+
                         shutil.move(
                             input + ".h264",
                             os.getcwd() + "/ConversionQueue/",
@@ -210,37 +255,35 @@ def motion_detection():
                         picam2.stop()
                         picam2.start()
                         recording = False
+                        video_button.setEnabled(True)
                     if (time.time() - start_time) < piSettings.recording_length:
                         if ssim_val < piSettings.movementThreshold:
                             activity_count += 1
                             if activity_count >= 10:
 
-                                if not testing:
-                                    picam2.stop_encoder()
-                                    print("Recording Stopped")
-                                    shutil.move(
-                                        input + ".h264",
-                                        os.getcwd() + "/ConversionQueue/",
-                                        copy_function=shutil.copy2,
-                                    )
-                                    # delete recording if total length is equal to the tail_length value,
-                                    # indicating a false positive
-                                    if auto_delete:
-                                        recorded_file = cv2.VideoCapture()
-                                        recorded_frames = recorded_file.get(
-                                            cv2.CAP_PROP_FRAME_COUNT
+                                picam2.stop_encoder()
+                                print("Recording Stopped")
+
+                                if auto_delete:
+
+                                    print(recorded_frames)
+                                    if recorded_frames < 45 and os.path.isfile(
+                                        os.getcwd() + "/" + input + ".h264"
+                                    ):
+                                        os.remove(os.getcwd() + "/" + input + ".h264")
+                                        print("auto-deleted")
+                                    else:
+                                        shutil.move(
+                                            input + ".h264",
+                                            os.getcwd() + "/ConversionQueue/",
+                                            copy_function=shutil.copy2,
                                         )
-                                        if recorded_frames < 5 + (
-                                            30 / 2
-                                        ) and os.path.isfile(input_file):
-                                            os.remove(input_file)
-                                            print("auto-deleted")
-                                else:
-                                    print(0)
-                                    # print(" recording stopped - Testing mode")
+                                    recorded_frames = 0
+
                                 picam2.stop()
                                 picam2.start()
                                 recording = False
+                                video_button.setEnabled(True)
 
                         else:
                             activity_count = 0
@@ -334,7 +377,7 @@ def on_photo_button_clicked():
 #     height=piSettings.video_resolution[1],
 #     keep_ar=False,
 # )
-video_button = QPushButton("Record " + str(piSettings.recording_length) + "s of Video")
+video_button = QPushButton("Record Video")
 motion_button = QPushButton("Enable Motion Detection")
 photo_button = QPushButton("Click to capture JPEG")
 window = QWidget()
@@ -343,7 +386,7 @@ window = QWidget()
 photo_button.clicked.connect(on_photo_button_clicked)
 motion_button.clicked.connect(on_motion_button_clicked)
 video_button.clicked.connect(record_video)
-# qpicamera2.done_signal.connect(capture_done)
+
 picam2.start()
 
 frame = np.zeros((100, 100, 3), dtype=np.uint8)
@@ -356,10 +399,12 @@ blank = np.zeros((resized_video[1], resized_video[0]), np.uint8)
 recording = False
 taking_photo = False
 testing = False
-auto_delete = False
+auto_delete = True
 layout_h = QHBoxLayout()
 layout_v = QVBoxLayout()
 
+layout_v.addWidget(status_label)
+layout_v.addWidget(settings_label)
 layout_v.addWidget(video_button)
 layout_v.addWidget(photo_button)
 layout_v.addWidget(motion_button)
