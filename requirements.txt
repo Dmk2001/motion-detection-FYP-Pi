@@ -1,0 +1,10 @@
+firebase_admin==6.4.0
+gpiozero==1.6.2
+numpy==1.26.4
+picamera2==0.3.12
+protobuf==3.20.3
+PyQt5==5.15.10
+PyQt5_sip==12.8.1
+skimage==0.0
+tflite_support==0.4.3
+urllib3==1.26.5

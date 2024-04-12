@@ -85,7 +85,7 @@ def on_snapshot(doc_snapshot, changes, real_time):
         # Enable/Disabel Motion
         if (
             change.type.name == "MODIFIED"
-            and "motion_detection" in change.document.to_dict()
+            and "motion_detection" in change.document.to_dict() and change.document.to_dict().get("motion_detection") != motion
         ):
 
             on_motion_button_clicked()
@@ -393,12 +393,12 @@ def on_photo_button_clicked():
 
 
 # Code to set up preview on GUI
-# qpicamera2 = QGlPicamera2(
-#     picam2,
-#     width=piSettings.video_resolution[0],
-#     height=piSettings.video_resolution[1],
-#     keep_ar=False,
-# )
+qpicamera2 = QGlPicamera2(
+    picam2,
+    width=piSettings.video_resolution[0],
+    height=piSettings.video_resolution[1],
+    keep_ar=False,
+)
 
 # GUI creation
 video_button = QPushButton("Record Video")
@@ -431,12 +431,12 @@ layout_v.addWidget(settings_label)
 layout_v.addWidget(video_button)
 layout_v.addWidget(photo_button)
 layout_v.addWidget(motion_button)
-# layout_h.addWidget(qpicamera2, 80)
+layout_h.addWidget(qpicamera2, 80)
 layout_h.addLayout(layout_v, 20)
 window.setWindowTitle("Qt Picamera2 App")
 window.resize(1200, 600)
 window.setLayout(layout_h)
-
+layout_h.addWidget(qpicamera2, 80)
 # Start app
 window.show()
 app.exec()
